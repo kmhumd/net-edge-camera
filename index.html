@@ -17,8 +17,10 @@
   #stage { position:relative; flex:1; min-width:0; background:#2c2f33; touch-action:none; --gw:min(30%, 150px); }   /* --gw: 左グラフの幅 */
   #video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
   #ov { position:absolute; inset:0; width:100%; height:100%; }
-  #prof { position:absolute; left:var(--gw); right:0; bottom:0; height:22%; pointer-events:none; }
-  #graph { position:absolute; left:0; top:0; bottom:0; width:var(--gw); pointer-events:none; display:none; }
+  #prof { position:absolute; left:0; bottom:0; width:100%; height:22%; pointer-events:none; }
+  #stage.g #prof { left:var(--gw); width:calc(100% - var(--gw)); }   /* 左グラフ表示中はその右端から */
+  #graph { position:absolute; left:0; top:0; width:var(--gw); height:100%; pointer-events:none; display:none; }
+  #stage.g #graph { display:block; }
   #read { position:absolute; left:50%; transform:translateX(-50%); top:8px; text-align:center; white-space:nowrap; background:rgba(251,250,247,.88); border-radius:6px;
     padding:6px 10px; font-size:20px; font-variant-numeric:tabular-nums; pointer-events:none; }
   #read small { display:block; font-size:11px; color:var(--sub); }
@@ -281,8 +283,8 @@ function draw(m) {
 /* ---- 記録グラフ（横: 位置 px、縦: 時間。上が最新で下へ流れる） ---- */
 var ROW = 3;   // 1 記録あたりの高さ（CSS px）
 function drawGraph() {
-  if (!recs.length) { graph.style.display = 'none'; return; }
-  graph.style.display = 'block';
+  $('stage').classList.toggle('g', recs.length > 0);
+  if (!recs.length) return;
   var dpr = window.devicePixelRatio || 1, cw = graph.clientWidth, ch = graph.clientHeight;
   if (!cw || !ch) return;
   if (graph.width !== Math.round(cw * dpr)) { graph.width = Math.round(cw * dpr); graph.height = Math.round(ch * dpr); }
