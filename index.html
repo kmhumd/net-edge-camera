@@ -14,13 +14,12 @@
   html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
     font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; font-size:13px; overflow:hidden; }
   #app { display:flex; height:100%; width:100%; }
-  #stage { position:relative; flex:1; min-width:0; background:#2c2f33; touch-action:none; }
+  #stage { position:relative; flex:1; min-width:0; background:#2c2f33; touch-action:none; --gw:min(30%, 150px); }   /* --gw: 左グラフの幅 */
   #video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
   #ov { position:absolute; inset:0; width:100%; height:100%; }
-  #prof { position:absolute; left:0; right:0; bottom:0; height:22%; width:100%; pointer-events:none; }
-  #graph { position:absolute; left:8px; top:64px; bottom:25%; width:30%; max-width:150px; pointer-events:none;
-    border-radius:6px; display:none; }
-  #read { position:absolute; left:8px; top:8px; background:rgba(251,250,247,.88); border-radius:6px;
+  #prof { position:absolute; left:var(--gw); right:0; bottom:0; height:22%; pointer-events:none; }
+  #graph { position:absolute; left:0; top:0; bottom:0; width:var(--gw); pointer-events:none; display:none; }
+  #read { position:absolute; left:calc(var(--gw) + 8px); top:8px; background:rgba(251,250,247,.88); border-radius:6px;
     padding:6px 10px; font-size:20px; font-variant-numeric:tabular-nums; pointer-events:none; }
   #read small { display:block; font-size:11px; color:var(--sub); }
   #side { width:232px; background:var(--panel); border-left:1px solid var(--line); overflow-y:auto; padding:8px; }
