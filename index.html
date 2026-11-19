@@ -73,7 +73,7 @@
     <button id="bZero">今の位置を 0 にする</button>
 
     <h2>記録</h2>
-    <p class="note">1 秒ごとに位置を記録します。</p>
+    <p class="note">0.1 秒ごと（10 回/秒）に位置を記録します。</p>
     <button id="bRec" disabled>記録開始</button>
     <div class="two"><button id="bCsv">CSV 保存</button><button id="bClr">消去</button></div>
     <p class="note" id="stat">0 件</p>
@@ -116,10 +116,11 @@ var track = null, caps = {}, torchOn = false, focusLocked = false;
 var line = { ax: 0.25, ay: 0.5, bx: 0.75, by: 0.5 };   // 映像に対する割合
 var zero = null, last = null, lastProf = null;
 var recs = [], recTimer = null, wake = null;
-var INT = 1;   // 記録間隔（秒）
+var INT = 0.1;   // 記録間隔（秒）= 10 fps
 var HALF = 4;   // 線の太さの半分（画素）。直交方向に平均する
 
-function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+var storeFull = false;
+function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); storeFull = false; } catch (e) { if (k === 'ne_recs') storeFull = true; } }
 function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
 
 (function restore() {
@@ -134,7 +135,7 @@ function saveSet() {
 }
 ['iW', 'iTh'].forEach(function (id) { $(id).addEventListener('change', saveSet); });
 
-function uiStat(msg) { $('stat').textContent = recs.length + ' 件' + (recTimer ? '（記録中）' : '') + (msg ? ' ' + msg : ''); }
+function uiStat(msg) { $('stat').textContent = recs.length + ' 件' + (recTimer ? '（記録中）' : '') + (storeFull ? '　端末保存の上限超え。CSV を保存してください' : '') + (msg ? ' ' + msg : ''); }
 
 /* ---- カメラ ---- */
 $('bStart').onclick = async function () {
@@ -331,7 +332,7 @@ function addRec() {
   var m = measure(); if (!m) return;
   var px = (m.ok && m.px != null) ? m.px - (zero || 0) : null;
   recs.push([new Date().toISOString(), px == null ? '' : px.toFixed(2), m.strength.toFixed(1), m.n]);
-  if (recs.length % 12 === 0) store('ne_recs', recs);
+  if (recs.length % 50 === 0) store('ne_recs', recs);   // 5 秒ごとに端末へ保存
   uiStat(); drawGraph();
 }
 $('bRec').onclick = function () {
