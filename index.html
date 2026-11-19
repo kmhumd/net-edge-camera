@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>ネット端カメラ記録</title>
+<style>
+  :root { --bg:#f3f1ec; --panel:#fbfaf7; --ink:#3b3f45; --sub:#7b828c; --line:#d9d5cc;
+          --acc:#7fa8b8; --acc2:#c9a48a; --ok:#8fb39a; --ng:#cf9a9a; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; font-size:13px; overflow:hidden; }
+  #app { display:flex; height:100%; width:100%; }
+  #stage { position:relative; flex:1; min-width:0; background:#2c2f33; touch-action:none; }
+  #video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+  #ov { position:absolute; inset:0; width:100%; height:100%; }
+  #prof { position:absolute; left:0; right:0; bottom:0; height:22%; width:100%; pointer-events:none; }
+  #read { position:absolute; left:8px; top:8px; background:rgba(251,250,247,.88); border-radius:6px;
+    padding:6px 10px; font-size:20px; font-variant-numeric:tabular-nums; pointer-events:none; }
+  #read small { display:block; font-size:11px; color:var(--sub); }
+  #side { width:232px; background:var(--panel); border-left:1px solid var(--line); overflow-y:auto; padding:8px; }
+  h2 { font-size:11px; color:var(--sub); font-weight:600; margin:10px 0 4px; }
+  h2:first-child { margin-top:0; }
+  button { font:inherit; color:var(--ink); background:#fff; border:1px solid var(--line); border-radius:6px;
+    padding:8px 6px; width:100%; margin:0 0 5px; }
+  button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
+  button.rec { background:var(--ng); border-color:var(--ng); color:#fff; }
+  button:disabled { color:#b9bdc3; background:#f1efea; }
+  .row { display:flex; gap:5px; align-items:center; margin:0 0 5px; }
+  .row label { flex:1; color:var(--sub); font-size:12px; }
+  .row input, .row select { width:92px; font:inherit; padding:5px; border:1px solid var(--line); border-radius:5px; background:#fff; color:var(--ink); }
+  input[type=range] { width:100%; }
+  .note { font-size:11px; color:var(--sub); line-height:1.5; margin:0 0 5px; }
+  .two { display:flex; gap:5px; } .two button { flex:1; }
+  @media (orientation:portrait) {
+    #app { flex-direction:column; }
+    #stage { flex:none; height:48%; }
+    #side { width:100%; flex:1; border-left:none; border-top:1px solid var(--line);
+      display:grid; grid-template-columns:1fr 1fr; gap:0 10px; align-content:start; }
+    #side h2 { grid-column:1 / -1; }
+  }
+  #csvbox { position:fixed; inset:5%; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    display:none; flex-direction:column; padding:10px; z-index:8; }
+  #csvbox textarea { flex:1; font:11px monospace; margin-bottom:6px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="ov"></canvas>
+    <canvas id="prof"></canvas>
+    <div id="read"><span id="val">--</span><small id="sub">カメラ未開始</small></div>
+  </div>
+  <div id="side">
+    <h2>カメラ</h2>
+    <button id="bStart">カメラ開始</button>
+    <div class="two"><button id="bFull">全画面</button><button id="bTorch" disabled>ライト</button></div>
+    <button id="bFocus" disabled>ピント固定</button>
+    <input type="range" id="rFocus" disabled>
+    <p class="note" id="caps">開始すると、この端末で使える機能を表示します。</p>
+
+    <h2>検出線</h2>
+    <button id="bLock">線を固定する</button>
+    <p class="note">固定前は、線の両端の丸をドラッグして動かせます。A から B に向かって位置を数えます。</p>
+    <div class="row"><label>線の実長 mm</label><input id="iLen" type="number" inputmode="decimal" placeholder="未入力"></div>
+    <div class="row"><label>平滑幅 px</label><input id="iW" type="number" inputmode="numeric" value="15"></div>
+    <div class="row"><label>しきい値</label><input id="iTh" type="number" inputmode="numeric" value="20"></div>
+    <button id="bZero">今の位置を 0 にする</button>
+
+    <h2>記録</h2>
+    <div class="row"><label>間隔</label>
+      <select id="sInt"><option value="1">1 秒</option><option value="5" selected>5 秒</option>
+        <option value="10">10 秒</option><option value="60">60 秒</option></select></div>
+    <button id="bRec" disabled>記録開始</button>
+    <div class="two"><button id="bCsv">CSV 保存</button><button id="bClr">消去</button></div>
+    <p class="note" id="stat">0 件</p>
+  </div>
+</div>
+<div id="csvbox">
+  <textarea id="csvtxt" readonly></textarea>
+  <div class="two"><button id="bCopy">コピー</button><button id="bClose">閉じる</button></div>
+</div>
+
+<script>
+/* ---- DETECT-BEGIN ---- */
+// 輝度プロファイル p から、明暗の段差がいちばん大きい位置を返す。
+// 幅 W の左右平均の差を使うので、金網の目の細かい明暗には引っ張られにくい。
+function detectEdge(p, W) {
+  var n = p.length;
+  if (n < 2 * W + 2) return null;
+  var cs = new Float64Array(n + 1);
+  for (var i = 0; i < n; i++) cs[i + 1] = cs[i] + p[i];
+  var d = new Float64Array(n), best = -1, bi = -1;
+  for (var k = W; k <= n - W; k++) {
+    d[k] = (cs[k + W] - cs[k]) / W - (cs[k] - cs[k - W]) / W;
+    var a = Math.abs(d[k]);
+    if (a > best) { best = a; bi = k; }
+  }
+  var off = 0;
+  if (bi > W && bi < n - W) {
+    var y0 = Math.abs(d[bi - 1]), y1 = Math.abs(d[bi]), y2 = Math.abs(d[bi + 1]);
+    var den = y0 - 2 * y1 + y2;
+    if (den !== 0) off = 0.5 * (y0 - y2) / den;
+  }
+  return { pos: bi - 0.5 + off, strength: best };   // pos: 画素中心を 0,1,2… とした座標
+}
+/* ---- DETECT-END ---- */
+
+var $ = function (id) { return document.getElementById(id); };
+var video = $('video'), ov = $('ov'), prof = $('prof');
+var work = document.createElement('canvas'), wctx = work.getContext('2d', { willReadFrequently: true });
+var track = null, caps = {}, torchOn = false, focusLocked = false, locked = false;
+var line = { ax: 0.25, ay: 0.5, bx: 0.75, by: 0.5 };   // 映像に対する割合
+var zero = null, last = null, lastProf = null;
+var recs = [], recTimer = null, wake = null;
+var HALF = 4;   // 線の太さの半分（画素）。直交方向に平均する
+
+function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+
+(function restore() {
+  var l = load('ne_line'); if (l && isFinite(l.ax)) line = l;
+  var s = load('ne_set');
+  if (s) { if (s.len) $('iLen').value = s.len; if (s.w) $('iW').value = s.w; if (s.th) $('iTh').value = s.th;
+           if (s.int) $('sInt').value = s.int; locked = !!s.locked; zero = (s.zero == null ? null : s.zero); }
+  var r = load('ne_recs'); if (Array.isArray(r)) recs = r;
+  uiLock(); uiStat();
+})();
+function saveSet() {
+  store('ne_set', { len: $('iLen').value, w: $('iW').value, th: $('iTh').value, int: $('sInt').value, locked: locked, zero: zero });
+}
+['iLen', 'iW', 'iTh', 'sInt'].forEach(function (id) { $(id).addEventListener('change', saveSet); });
+
+function uiLock() { $('bLock').textContent = locked ? '線の固定を解除' : '線を固定する'; $('bLock').className = locked ? 'on' : ''; }
+function uiStat(msg) { $('stat').textContent = recs.length + ' 件' + (recTimer ? '（記録中）' : '') + (msg ? ' ' + msg : ''); }
+
+/* ---- カメラ ---- */
+$('bStart').onclick = async function () {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    $('caps').textContent = 'このページではカメラを使えません（https で開いているか確認してください）。'; return;
+  }
+  try {
+    var st = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    video.srcObject = st; await video.play();
+    track = st.getVideoTracks()[0];
+    caps = track.getCapabilities ? track.getCapabilities() : {};
+    var s = track.getSettings ? track.getSettings() : {};
+    var canTorch = !!caps.torch;
+    var canFocus = Array.isArray(caps.focusMode) && caps.focusMode.indexOf('manual') >= 0;
+    $('bTorch').disabled = !canTorch; $('bFocus').disabled = !canFocus;
+    if (canFocus && caps.focusDistance) {
+      var r = $('rFocus'); r.min = caps.focusDistance.min; r.max = caps.focusDistance.max;
+      r.step = caps.focusDistance.step || 0.01; if (s.focusDistance != null) r.value = s.focusDistance;
+    }
+    $('caps').textContent = '映像 ' + (s.width || video.videoWidth) + '×' + (s.height || video.videoHeight) +
+      '　ライト: ' + (canTorch ? '可' : '不可') + '　ピント固定: ' + (canFocus ? '可' : '不可');
+    $('bRec').disabled = false; $('bStart').textContent = 'カメラ動作中'; $('bStart').disabled = true;
+    requestAnimationFrame(loop);
+  } catch (e) { $('caps').textContent = 'カメラを開始できません: ' + e.name; }
+};
+$('bTorch').onclick = async function () {
+  try { torchOn = !torchOn; await track.applyConstraints({ advanced: [{ torch: torchOn }] }); }
+  catch (e) { torchOn = false; $('caps').textContent = 'ライトを切り替えできません: ' + e.name; }
+  this.className = torchOn ? 'on' : '';
+};
+$('bFocus').onclick = async function () {
+  try {
+    if (!focusLocked) {
+      var s = track.getSettings(), c = { focusMode: 'manual' };
+      if (s.focusDistance != null) { c.focusDistance = s.focusDistance; $('rFocus').value = s.focusDistance; }
+      await track.applyConstraints({ advanced: [c] }); focusLocked = true;
+    } else { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); focusLocked = false; }
+  } catch (e) { $('caps').textContent = 'ピントを切り替えできません: ' + e.name; }
+  this.className = focusLocked ? 'on' : ''; this.textContent = focusLocked ? 'ピント固定中' : 'ピント固定';
+  $('rFocus').disabled = !(focusLocked && caps.focusDistance);
+};
+$('rFocus').oninput = function () {
+  if (track && focusLocked) track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: +this.value }] }).catch(function () {});
+};
+$('bFull').onclick = async function () {
+  try { var el = document.documentElement; await (el.requestFullscreen ? el.requestFullscreen() : el.webkitRequestFullscreen()); } catch (e) {}
+};
+async function wakeOn() { try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', function () { if (recTimer && document.visibilityState === 'visible') wakeOn(); });
+
+/* ---- 線の操作 ---- */
+function box() {   // 映像が表示されている矩形（object-fit:contain）
+  var cw = ov.clientWidth, ch = ov.clientHeight, vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+  var sc = Math.min(cw / vw, ch / vh);
+  return { x: (cw - vw * sc) / 2, y: (ch - vh * sc) / 2, w: vw * sc, h: vh * sc };
+}
+var drag = null;
+ov.addEventListener('pointerdown', function (e) {
+  if (locked) return;
+  var b = box(), r = ov.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  var da = Math.hypot(x - (b.x + line.ax * b.w), y - (b.y + line.ay * b.h));
+  var db = Math.hypot(x - (b.x + line.bx * b.w), y - (b.y + line.by * b.h));
+  if (Math.min(da, db) > 44) return;
+  drag = da <= db ? 'a' : 'b'; ov.setPointerCapture(e.pointerId);
+});
+ov.addEventListener('pointermove', function (e) {
+  if (!drag) return;
+  var b = box(), r = ov.getBoundingClientRect();
+  var u = Math.min(1, Math.max(0, (e.clientX - r.left - b.x) / b.w));
+  var v = Math.min(1, Math.max(0, (e.clientY - r.top - b.y) / b.h));
+  line[drag + 'x'] = u; line[drag + 'y'] = v;
+});
+ov.addEventListener('pointerup', function () { if (drag) { drag = null; store('ne_line', line); } });
+$('bLock').onclick = function () { locked = !locked; uiLock(); saveSet(); store('ne_line', line); };
+$('bZero').onclick = function () { if (last && last.ok) { zero = last.px; saveSet(); } };
+
+/* ---- 測定 ---- */
+function measure() {
+  var vw = video.videoWidth, vh = video.videoHeight; if (!vw) return null;
+  var ax = line.ax * vw, ay = line.ay * vh, bx = line.bx * vw, by = line.by * vh;
+  var L = Math.hypot(bx - ax, by - ay), n = Math.round(L); if (n < 40) return null;
+  var ux = (bx - ax) / L, uy = (by - ay) / L, nx = -uy, ny = ux;
+  var x0 = Math.max(0, Math.floor(Math.min(ax, bx) - HALF - 1)), y0 = Math.max(0, Math.floor(Math.min(ay, by) - HALF - 1));
+  var x1 = Math.min(vw, Math.ceil(Math.max(ax, bx) + HALF + 2)), y1 = Math.min(vh, Math.ceil(Math.max(ay, by) + HALF + 2));
+  var w = x1 - x0, h = y1 - y0; if (w < 1 || h < 1) return null;
+  if (work.width !== w || work.height !== h) { work.width = w; work.height = h; }
+  wctx.drawImage(video, x0, y0, w, h, 0, 0, w, h);
+  var img = wctx.getImageData(0, 0, w, h).data, p = new Float32Array(n);
+  for (var i = 0; i < n; i++) {
+    var cx = ax + ux * (i + 0.5), cy = ay + uy * (i + 0.5), sum = 0, cnt = 0;
+    for (var t = -HALF; t <= HALF; t++) {
+      var px = Math.round(cx + nx * t) - x0, py = Math.round(cy + ny * t) - y0;
+      if (px < 0 || py < 0 || px >= w || py >= h) continue;
+      var o = (py * w + px) * 4; sum += 0.299 * img[o] + 0.587 * img[o + 1] + 0.114 * img[o + 2]; cnt++;
+    }
+    p[i] = cnt ? sum / cnt : 0;
+  }
+  var W = Math.max(2, Math.round(+$('iW').value || 15)), th = +$('iTh').value || 0;
+  var r = detectEdge(p, W); lastProf = p;
+  if (!r) return { ok: false, n: n, px: null, strength: 0 };
+  var px2 = r.pos + 0.5;                       // A 端からの距離（画素）
+  return { ok: r.strength >= th, n: n, px: px2, strength: r.strength };
+}
+function toMm(px, n) { var len = parseFloat($('iLen').value); return (len > 0) ? px * len / n : null; }
+
+function loop() {
+  var m = measure(); if (m) last = m;
+  draw(m); requestAnimationFrame(loop);
+}
+function draw(m) {
+  var dpr = window.devicePixelRatio || 1, cw = ov.clientWidth, ch = ov.clientHeight;
+  if (ov.width !== Math.round(cw * dpr)) { ov.width = Math.round(cw * dpr); ov.height = Math.round(ch * dpr); }
+  var g = ov.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, ch);
+  var b = box(), ax = b.x + line.ax * b.w, ay = b.y + line.ay * b.h, bx = b.x + line.bx * b.w, by = b.y + line.by * b.h;
+  g.lineWidth = 2; g.strokeStyle = 'rgba(127,168,184,.95)'; g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+  g.font = '12px sans-serif'; g.fillStyle = '#fff';
+  [[ax, ay, 'A'], [bx, by, 'B']].forEach(function (q) {
+    g.beginPath(); g.arc(q[0], q[1], locked ? 4 : 11, 0, 6.3); g.fillStyle = 'rgba(127,168,184,.75)'; g.fill();
+    g.fillStyle = '#fff'; g.fillText(q[2], q[0] + 12, q[1] - 8);
+  });
+  if (m && m.px != null) {
+    var t = m.px / m.n, ex = ax + (bx - ax) * t, ey = ay + (by - ay) * t;
+    g.beginPath(); g.arc(ex, ey, 7, 0, 6.3); g.strokeStyle = m.ok ? '#8fb39a' : '#cf9a9a'; g.lineWidth = 3; g.stroke();
+  }
+  // 数値
+  if (m && m.px != null && m.ok) {
+    var px = m.px - (zero || 0), mm = toMm(px, m.n);
+    $('val').textContent = (mm != null ? mm.toFixed(1) + ' mm' : px.toFixed(1) + ' px');
+    $('sub').textContent = '段差 ' + m.strength.toFixed(0) + (zero != null ? '　0点あり' : '') + (mm == null ? '　実長未入力' : '');
+  } else if (m) { $('val').textContent = '--'; $('sub').textContent = '端を検出できません（段差 ' + m.strength.toFixed(0) + '）'; }
+  // 輝度プロファイル
+  var pw = prof.clientWidth, ph = prof.clientHeight;
+  if (prof.width !== Math.round(pw * dpr)) { prof.width = Math.round(pw * dpr); prof.height = Math.round(ph * dpr); }
+  var c = prof.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, pw, ph);
+  if (!lastProf) return;
+  c.fillStyle = 'rgba(44,47,51,.55)'; c.fillRect(0, 0, pw, ph);
+  c.strokeStyle = '#e8e4da'; c.lineWidth = 1; c.beginPath();
+  for (var i = 0; i < lastProf.length; i++) {
+    var x = i / (lastProf.length - 1) * pw, y = ph - 3 - lastProf[i] / 255 * (ph - 6);
+    if (i) c.lineTo(x, y); else c.moveTo(x, y);
+  }
+  c.stroke();
+  if (m && m.px != null) { var xx = m.px / m.n * pw; c.strokeStyle = m.ok ? '#8fb39a' : '#cf9a9a'; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(xx, 0); c.lineTo(xx, ph); c.stroke(); }
+}
+
+/* ---- 記録 ---- */
+function addRec() {
+  var m = measure(); if (!m) return;
+  var px = (m.ok && m.px != null) ? m.px - (zero || 0) : null, mm = px != null ? toMm(px, m.n) : null;
+  recs.push([new Date().toISOString(), px == null ? '' : px.toFixed(2), mm == null ? '' : mm.toFixed(2), m.strength.toFixed(1), m.n]);
+  if (recs.length % 12 === 0) store('ne_recs', recs);
+  uiStat();
+}
+$('bRec').onclick = function () {
+  if (recTimer) { clearInterval(recTimer); recTimer = null; store('ne_recs', recs); if (wake) { try { wake.release(); } catch (e) {} wake = null; } }
+  else { addRec(); recTimer = setInterval(addRec, (+$('sInt').value || 5) * 1000); wakeOn(); }
+  this.textContent = recTimer ? '記録停止' : '記録開始'; this.className = recTimer ? 'rec' : ''; uiStat();
+};
+function csv() {
+  return 'time_iso,pos_px,pos_mm,step_strength,line_px\n' + recs.map(function (r) { return r.join(','); }).join('\n') + '\n';
+}
+$('bCsv').onclick = function () {
+  store('ne_recs', recs);
+  var txt = csv();
+  try {
+    var a = document.createElement('a'), d = new Date(), z = function (v) { return ('0' + v).slice(-2); };
+    a.href = URL.createObjectURL(new Blob(['﻿' + txt], { type: 'text/csv' }));
+    a.download = 'net_edge_' + d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + '_' + z(d.getHours()) + z(d.getMinutes()) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) {}
+  $('csvtxt').value = txt; $('csvbox').style.display = 'flex';
+};
+$('bCopy').onclick = function () { $('csvtxt').select(); try { navigator.clipboard.writeText($('csvtxt').value); } catch (e) { document.execCommand('copy'); } };
+$('bClose').onclick = function () { $('csvbox').style.display = 'none'; };
+var clrArmed = 0;
+$('bClr').onclick = function () {
+  if (Date.now() - clrArmed < 3000) { recs = []; store('ne_recs', recs); clrArmed = 0; this.textContent = '消去'; uiStat(); }
+  else { clrArmed = Date.now(); this.textContent = 'もう一度で消去'; var b = this; setTimeout(function () { b.textContent = '消去'; }, 3000); }
+};
+window.addEventListener('pagehide', function () { store('ne_recs', recs); });
+</script>
+</body>
+</html>
