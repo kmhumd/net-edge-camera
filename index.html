@@ -2,7 +2,10 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ネット端カメラ記録</title>
 <style>
   :root { --bg:#f3f1ec; --panel:#fbfaf7; --ink:#3b3f45; --sub:#7b828c; --line:#d9d5cc;
@@ -55,15 +58,13 @@
   <div id="side">
     <h2>カメラ</h2>
     <button id="bStart">カメラ開始</button>
-    <div class="two"><button id="bFull">全画面</button><button id="bTorch" disabled>ライト</button></div>
+    <button id="bTorch" disabled>ライト</button>
     <button id="bFocus" disabled>ピント固定</button>
     <input type="range" id="rFocus" disabled>
     <p class="note" id="caps">開始すると、この端末で使える機能を表示します。</p>
 
     <h2>検出線</h2>
-    <button id="bLock">線を固定する</button>
-    <p class="note">固定前は、線の両端の丸をドラッグして動かせます。A から B に向かって位置を数えます。</p>
-    <div class="row"><label>線の実長 mm</label><input id="iLen" type="number" inputmode="decimal" placeholder="未入力"></div>
+    <p class="note">線の両端の丸をドラッグして動かせます。記録中は動かせません。A から B に向かって位置を数えます。線を動かすと 0 点は消えます。</p>
     <div class="row"><label>平滑幅 px</label><input id="iW" type="number" inputmode="numeric" value="15"></div>
     <div class="row"><label>しきい値</label><input id="iTh" type="number" inputmode="numeric" value="20"></div>
     <button id="bZero">今の位置を 0 にする</button>
@@ -110,7 +111,7 @@ function detectEdge(p, W) {
 var $ = function (id) { return document.getElementById(id); };
 var video = $('video'), ov = $('ov'), prof = $('prof');
 var work = document.createElement('canvas'), wctx = work.getContext('2d', { willReadFrequently: true });
-var track = null, caps = {}, torchOn = false, focusLocked = false, locked = false;
+var track = null, caps = {}, torchOn = false, focusLocked = false;
 var line = { ax: 0.25, ay: 0.5, bx: 0.75, by: 0.5 };   // 映像に対する割合
 var zero = null, last = null, lastProf = null;
 var recs = [], recTimer = null, wake = null;
@@ -122,17 +123,16 @@ function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e)
 (function restore() {
   var l = load('ne_line'); if (l && isFinite(l.ax)) line = l;
   var s = load('ne_set');
-  if (s) { if (s.len) $('iLen').value = s.len; if (s.w) $('iW').value = s.w; if (s.th) $('iTh').value = s.th;
-           if (s.int) $('sInt').value = s.int; locked = !!s.locked; zero = (s.zero == null ? null : s.zero); }
+  if (s) { if (s.w) $('iW').value = s.w; if (s.th) $('iTh').value = s.th;
+           if (s.int) $('sInt').value = s.int; zero = (s.zero == null ? null : s.zero); }
   var r = load('ne_recs'); if (Array.isArray(r)) recs = r;
-  uiLock(); uiStat();
+  uiStat();
 })();
 function saveSet() {
-  store('ne_set', { len: $('iLen').value, w: $('iW').value, th: $('iTh').value, int: $('sInt').value, locked: locked, zero: zero });
+  store('ne_set', { w: $('iW').value, th: $('iTh').value, int: $('sInt').value, zero: zero });
 }
-['iLen', 'iW', 'iTh', 'sInt'].forEach(function (id) { $(id).addEventListener('change', saveSet); });
+['iW', 'iTh', 'sInt'].forEach(function (id) { $(id).addEventListener('change', saveSet); });
 
-function uiLock() { $('bLock').textContent = locked ? '線の固定を解除' : '線を固定する'; $('bLock').className = locked ? 'on' : ''; }
 function uiStat(msg) { $('stat').textContent = recs.length + ' 件' + (recTimer ? '（記録中）' : '') + (msg ? ' ' + msg : ''); }
 
 /* ---- カメラ ---- */
@@ -179,9 +179,6 @@ $('bFocus').onclick = async function () {
 $('rFocus').oninput = function () {
   if (track && focusLocked) track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: +this.value }] }).catch(function () {});
 };
-$('bFull').onclick = async function () {
-  try { var el = document.documentElement; await (el.requestFullscreen ? el.requestFullscreen() : el.webkitRequestFullscreen()); } catch (e) {}
-};
 async function wakeOn() { try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch (e) {} }
 document.addEventListener('visibilitychange', function () { if (recTimer && document.visibilityState === 'visible') wakeOn(); });
 
@@ -193,7 +190,7 @@ function box() {   // 映像が表示されている矩形（object-fit:contain�
 }
 var drag = null;
 ov.addEventListener('pointerdown', function (e) {
-  if (locked) return;
+  if (recTimer) return;
   var b = box(), r = ov.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   var da = Math.hypot(x - (b.x + line.ax * b.w), y - (b.y + line.ay * b.h));
   var db = Math.hypot(x - (b.x + line.bx * b.w), y - (b.y + line.by * b.h));
@@ -206,9 +203,9 @@ ov.addEventListener('pointermove', function (e) {
   var u = Math.min(1, Math.max(0, (e.clientX - r.left - b.x) / b.w));
   var v = Math.min(1, Math.max(0, (e.clientY - r.top - b.y) / b.h));
   line[drag + 'x'] = u; line[drag + 'y'] = v;
+  if (zero != null) { zero = null; saveSet(); }
 });
 ov.addEventListener('pointerup', function () { if (drag) { drag = null; store('ne_line', line); } });
-$('bLock').onclick = function () { locked = !locked; uiLock(); saveSet(); store('ne_line', line); };
 $('bZero').onclick = function () { if (last && last.ok) { zero = last.px; saveSet(); } };
 
 /* ---- 測定 ---- */
@@ -238,7 +235,6 @@ function measure() {
   var px2 = r.pos + 0.5;                       // A 端からの距離（画素）
   return { ok: r.strength >= th, n: n, px: px2, strength: r.strength };
 }
-function toMm(px, n) { var len = parseFloat($('iLen').value); return (len > 0) ? px * len / n : null; }
 
 function loop() {
   var m = measure(); if (m) last = m;
@@ -252,7 +248,7 @@ function draw(m) {
   g.lineWidth = 2; g.strokeStyle = 'rgba(127,168,184,.95)'; g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
   g.font = '12px sans-serif'; g.fillStyle = '#fff';
   [[ax, ay, 'A'], [bx, by, 'B']].forEach(function (q) {
-    g.beginPath(); g.arc(q[0], q[1], locked ? 4 : 11, 0, 6.3); g.fillStyle = 'rgba(127,168,184,.75)'; g.fill();
+    g.beginPath(); g.arc(q[0], q[1], recTimer ? 4 : 11, 0, 6.3); g.fillStyle = 'rgba(127,168,184,.75)'; g.fill();
     g.fillStyle = '#fff'; g.fillText(q[2], q[0] + 12, q[1] - 8);
   });
   if (m && m.px != null) {
@@ -261,9 +257,9 @@ function draw(m) {
   }
   // 数値
   if (m && m.px != null && m.ok) {
-    var px = m.px - (zero || 0), mm = toMm(px, m.n);
-    $('val').textContent = (mm != null ? mm.toFixed(1) + ' mm' : px.toFixed(1) + ' px');
-    $('sub').textContent = '段差 ' + m.strength.toFixed(0) + (zero != null ? '　0点あり' : '') + (mm == null ? '　実長未入力' : '');
+    var px = m.px - (zero || 0);
+    $('val').textContent = px.toFixed(1) + ' px';
+    $('sub').textContent = '段差 ' + m.strength.toFixed(0) + (zero != null ? '　0点あり' : '');
   } else if (m) { $('val').textContent = '--'; $('sub').textContent = '端を検出できません（段差 ' + m.strength.toFixed(0) + '）'; }
   // 輝度プロファイル
   var pw = prof.clientWidth, ph = prof.clientHeight;
@@ -284,8 +280,8 @@ function draw(m) {
 /* ---- 記録 ---- */
 function addRec() {
   var m = measure(); if (!m) return;
-  var px = (m.ok && m.px != null) ? m.px - (zero || 0) : null, mm = px != null ? toMm(px, m.n) : null;
-  recs.push([new Date().toISOString(), px == null ? '' : px.toFixed(2), mm == null ? '' : mm.toFixed(2), m.strength.toFixed(1), m.n]);
+  var px = (m.ok && m.px != null) ? m.px - (zero || 0) : null;
+  recs.push([new Date().toISOString(), px == null ? '' : px.toFixed(2), m.strength.toFixed(1), m.n]);
   if (recs.length % 12 === 0) store('ne_recs', recs);
   uiStat();
 }
@@ -295,7 +291,7 @@ $('bRec').onclick = function () {
   this.textContent = recTimer ? '記録停止' : '記録開始'; this.className = recTimer ? 'rec' : ''; uiStat();
 };
 function csv() {
-  return 'time_iso,pos_px,pos_mm,step_strength,line_px\n' + recs.map(function (r) { return r.join(','); }).join('\n') + '\n';
+  return 'time_iso,pos_px,step_strength,line_px\n' + recs.map(function (r) { return r.join(','); }).join('\n') + '\n';
 }
 $('bCsv').onclick = function () {
   store('ne_recs', recs);
