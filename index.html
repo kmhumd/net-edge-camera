@@ -113,19 +113,20 @@ function detectEdge(p, th) {
     }
   }
   if (!runs.length) return { pos: null, strength: contrast };
-  // 幅が中央値の 3 倍を超える区間（金属板など）は糸ではない
-  var ws = runs.map(function (r) { return r.w; }).sort(function (a, b) { return a - b; });
-  var wMed = ws[ws.length >> 1];
-  var peaks = runs.filter(function (r) { return r.w <= Math.max(6, wMed * 3); }).map(function (r) { return r.c; });
-  if (!peaks.length) return { pos: null, strength: contrast };
+  var num = function (a, b) { return a - b; };
+  var g0 = []; for (k = 1; k < runs.length; k++) g0.push(runs[k].c - runs[k - 1].c);
+  g0.sort(num); var pitch = g0.length ? g0[g0.length >> 1] : 0;   // 網目ピッチ（画素）
+  // 幅が糸の中央値の 3 倍かつピッチの 1.2 倍を超える区間（金属板など）は糸ではない
+  var ws = runs.map(function (r) { return r.w; }).sort(num);
+  var wMed = ws[ws.length >> 1], wMax = Math.max(6, wMed * 3, pitch * 1.2);
+  var peaks = runs.filter(function (r) { return r.w <= wMax; }).map(function (r) { return r.c; });
+  if (!peaks.length) return { pos: null, strength: contrast, pitch: pitch };
   // 糸が多い側が網。網を左（添字が小さい側）、背景を右に揃える
   var mean = 0; for (k = 0; k < peaks.length; k++) mean += peaks[k]; mean /= peaks.length;
   var flip = mean > (n - 1) / 2;
   if (flip) peaks = peaks.map(function (c) { return (n - 1) - c; }).reverse();
   var last = peaks[peaks.length - 1];
-  if (peaks.length >= 3) {
-    var gaps = []; for (k = 1; k < peaks.length; k++) gaps.push(peaks[k] - peaks[k - 1]);
-    gaps.sort(function (a, b) { return a - b; }); var pitch = gaps[gaps.length >> 1];   // 網目ピッチ（画素）
+  if (peaks.length >= 3 && pitch > 0) {
     // 背景側から見て、手前 2 本が網目ピッチで続いている最初の糸を端の糸とする（背景のゴミを除外）
     last = peaks[2];
     for (k = peaks.length - 1; k >= 2; k--) {
@@ -133,8 +134,9 @@ function detectEdge(p, th) {
       if (g1 >= pitch * 0.5 && g1 <= pitch * 1.6 && g2 >= pitch * 0.5 && g2 <= pitch * 1.6) { last = peaks[k]; break; }
     }
   }
-  var pos = flip ? (n - 1) - last : last;
-  return { pos: pos, strength: contrast };   // pos: 画素中心を 0,1,2… とした A からの座標
+  var un = function (c) { return flip ? (n - 1) - c : c; };
+  // pos: 端の糸の候補（A からの座標、画素中心を 0,1,2…）。cands: 見つかった糸すべて（追従用）
+  return { pos: un(last), strength: contrast, pitch: pitch, cands: peaks.map(un) };
 }
 /* ---- DETECT-END ---- */
 
@@ -262,8 +264,9 @@ function measure() {
   }
   var th = +$('iTh').value || 0;
   var r = detectEdge(p, th); lastProf = p;
-  if (!r || r.pos == null) return { ok: false, n: n, px: null, strength: r ? r.strength : 0 };
-  return { ok: true, n: n, px: r.pos + 0.5, strength: r.strength };   // px: A 端からの距離（画素）
+  if (!r || r.pos == null) return { ok: false, n: n, px: null, strength: r ? r.strength : 0, cands: [], pitch: 0 };
+  return { ok: true, n: n, px: r.pos + 0.5, strength: r.strength, pitch: r.pitch,   // px: A 端からの距離（画素）
+           cands: r.cands.map(function (c) { return c + 0.5; }) };
 }
 
 /* ---- 時間方向のフィルタ: 直近 K フレームの中央値。網が動いてブレた 1 フレームの失敗や跳びを吸収する ---- */
@@ -277,8 +280,25 @@ function filt(m) {
   return { ok: v.length >= need, n: m.n, px: v.length >= need ? v[v.length >> 1] : null,
            strength: st[st.length >> 1], valid: v.length, total: hist.length, t: Date.now() };
 }
+/* ---- 追従: 一度捉えた端の糸を、毎フレーム一番近い糸へ追い続ける。
+   別の糸が端として SWITCH_MS 以上続けて提案されたときだけ乗り換える（ブレによる一瞬の誤判定で飛ばない） ---- */
+var trk = null, awaySince = 0, SWITCH_MS = 500;
+function track(m, now) {
+  if (!m.ok) { if (!awaySince) awaySince = now; if (now - awaySince > SWITCH_MS * 2) trk = null; return null; }
+  var pitch = m.pitch > 0 ? m.pitch : 10;
+  if (trk == null) { trk = m.px; awaySince = 0; return trk; }
+  var best = null, bd = Infinity;
+  for (var i = 0; i < m.cands.length; i++) { var d = Math.abs(m.cands[i] - trk); if (d < bd) { bd = d; best = m.cands[i]; } }
+  if (best != null && bd <= pitch * 0.6) trk = best;                     // 近い糸に追従（連続的なずれ）
+  if (Math.abs(m.px - trk) > pitch * 0.6) {                               // 端の提案がロックと別の糸
+    if (!awaySince) awaySince = now;
+    if (now - awaySince > SWITCH_MS) { trk = m.px; awaySince = 0; }       // 続くなら乗り換え（織りの端の 1 ピッチ移動）
+  } else awaySince = 0;
+  return trk;
+}
 function loop() {
-  var m = measure(); if (m) last = filt(m);
+  var m = measure();
+  if (m) { var tp = track(m, Date.now()); last = filt({ ok: tp != null, px: tp, n: m.n, strength: m.strength }); }
   draw(last); requestAnimationFrame(loop);
 }
 function draw(m) {
