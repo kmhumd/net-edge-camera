@@ -266,9 +266,20 @@ function measure() {
   return { ok: true, n: n, px: r.pos + 0.5, strength: r.strength };   // px: A 端からの距離（画素）
 }
 
+/* ---- 時間方向のフィルタ: 直近 K フレームの中央値。網が動いてブレた 1 フレームの失敗や跳びを吸収する ---- */
+var hist = [], K = 9;
+function filt(m) {
+  hist.push(m); if (hist.length > K) hist.shift();
+  var v = [], st = [], num = function (a, b) { return a - b; };
+  for (var i = 0; i < hist.length; i++) { if (hist[i].ok) v.push(hist[i].px); st.push(hist[i].strength); }
+  v.sort(num); st.sort(num);
+  var need = Math.max(2, Math.ceil(hist.length / 3));
+  return { ok: v.length >= need, n: m.n, px: v.length >= need ? v[v.length >> 1] : null,
+           strength: st[st.length >> 1], valid: v.length, total: hist.length, t: Date.now() };
+}
 function loop() {
-  var m = measure(); if (m) last = m;
-  draw(m); requestAnimationFrame(loop);
+  var m = measure(); if (m) last = filt(m);
+  draw(last); requestAnimationFrame(loop);
 }
 function draw(m) {
   var dpr = window.devicePixelRatio || 1, cw = ov.clientWidth, ch = ov.clientHeight;
@@ -289,8 +300,8 @@ function draw(m) {
   if (m && m.px != null && m.ok) {
     var px = m.px - (zero || 0);
     $('val').textContent = px.toFixed(1) + ' px';
-    $('sub').textContent = '明暗差 ' + m.strength.toFixed(0) + (zero != null ? '　0点あり' : '');
-  } else if (m) { $('val').textContent = '--'; $('sub').textContent = '端を検出できません（明暗差 ' + m.strength.toFixed(0) + '）'; }
+    $('sub').textContent = '明暗差 ' + m.strength.toFixed(0) + '　検出 ' + m.valid + '/' + m.total + (zero != null ? '　0点あり' : '');
+  } else if (m) { $('val').textContent = '--'; $('sub').textContent = '端を検出できません（明暗差 ' + m.strength.toFixed(0) + '　検出 ' + m.valid + '/' + m.total + '）'; }
   // 輝度プロファイル
   var pw = prof.clientWidth, ph = prof.clientHeight;
   if (prof.width !== Math.round(pw * dpr)) { prof.width = Math.round(pw * dpr); prof.height = Math.round(ph * dpr); }
@@ -357,7 +368,8 @@ window.addEventListener('resize', drawGraph);
 
 /* ---- 記録 ---- */
 function addRec() {
-  var m = measure(); if (!m) return;
+  var m = last; if (!m) return;
+  if (Date.now() - m.t > 500) m = { ok: false, n: m.n, px: null, strength: 0 };   // 映像が止まっている間は空欄
   var px = (m.ok && m.px != null) ? m.px - (zero || 0) : null;
   recs.push([new Date().toISOString(), px == null ? '' : px.toFixed(2), m.strength.toFixed(1), m.n]);
   if (recs.length % 50 === 0) store('ne_recs', recs);   // 5 秒ごとに端末へ保存
