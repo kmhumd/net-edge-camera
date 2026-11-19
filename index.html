@@ -141,6 +141,7 @@ function detectEdge(p, th) {
 /* ---- DETECT-END ---- */
 
 var $ = function (id) { return document.getElementById(id); };
+window.onerror = function (msg, src, ln) { try { $('sub').textContent = 'エラー: ' + msg + ' (行 ' + ln + ')'; } catch (e) {} };
 var video = $('video'), ov = $('ov'), prof = $('prof'), graph = $('graph');
 var work = document.createElement('canvas'), wctx = work.getContext('2d', { willReadFrequently: true });
 var track = null, caps = {}, torchOn = false, focusLocked = false;
@@ -245,7 +246,8 @@ $('bZero').onclick = function () { if (last && last.ok) { zero = last.px; saveSe
 function measure() {
   var vw = video.videoWidth, vh = video.videoHeight; if (!vw) return null;
   var ax = line.ax * vw, ay = line.ay * vh, bx = line.bx * vw, by = line.by * vh;
-  var L = Math.hypot(bx - ax, by - ay), n = Math.round(L); if (n < 40) return null;
+  var L = Math.hypot(bx - ax, by - ay), n = Math.round(L);
+  if (n < 40) { $('val').textContent = '--'; $('sub').textContent = '線が短すぎます（A と B を離してください）'; return null; }
   var ux = (bx - ax) / L, uy = (by - ay) / L, nx = -uy, ny = ux;
   var x0 = Math.max(0, Math.floor(Math.min(ax, bx) - HALF - 1)), y0 = Math.max(0, Math.floor(Math.min(ay, by) - HALF - 1));
   var x1 = Math.min(vw, Math.ceil(Math.max(ax, bx) + HALF + 2)), y1 = Math.min(vh, Math.ceil(Math.max(ay, by) + HALF + 2));
@@ -283,7 +285,7 @@ function filt(m) {
 /* ---- 追従: 一度捉えた端の糸を、毎フレーム一番近い糸へ追い続ける。
    別の糸が端として SWITCH_MS 以上続けて提案されたときだけ乗り換える（ブレによる一瞬の誤判定で飛ばない） ---- */
 var trk = null, awaySince = 0, SWITCH_MS = 500;
-function track(m, now) {
+function trackEdge(m, now) {
   if (!m.ok) { if (!awaySince) awaySince = now; if (now - awaySince > SWITCH_MS * 2) trk = null; return null; }
   var pitch = m.pitch > 0 ? m.pitch : 10;
   if (trk == null) { trk = m.px; awaySince = 0; return trk; }
@@ -298,7 +300,7 @@ function track(m, now) {
 }
 function loop() {
   var m = measure();
-  if (m) { var tp = track(m, Date.now()); last = filt({ ok: tp != null, px: tp, n: m.n, strength: m.strength }); }
+  if (m) { var tp = trackEdge(m, Date.now()); last = filt({ ok: tp != null, px: tp, n: m.n, strength: m.strength }); }
   draw(last); requestAnimationFrame(loop);
 }
 function draw(m) {
